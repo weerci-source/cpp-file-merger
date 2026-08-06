@@ -1,0 +1,23 @@
+Структура проекта
+src/
+├── models/
+│   └── nodeItem.ts                 # класс NodeItem
+├── providers/
+│   └── fileListProvider.ts         # FileListProvider (логика дерева и состояния)
+├── services/
+│   ├── mergeService.ts             # слияние файлов, буфер, запись
+│   └── configurationService.ts     # чтение настроек (excludePatterns)
+├── utils/
+│   └── treeBuilder.ts              # построение дерева, сортировка
+├── commands/
+│   ├── index.ts                    # регистрация всех команд
+│   ├── addFiles.ts
+│   ├── addFolder.ts
+│   ├── addOpenEditors.ts
+│   ├── removeFile.ts
+│   ├── removeSelected.ts
+│   ├── toggleExclude.ts
+│   ├── mergeAndCopy.ts
+│   ├── clearList.ts
+│   └── configureExcludes.ts
+└── extension.ts                    # точка входа (активация)

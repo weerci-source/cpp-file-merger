@@ -1,26 +1,24 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
+import { FileListProvider } from './providers/fileListProvider';
+import { MergeService } from './services/mergeService';
+import { registerAllCommands } from './commands';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+    const provider = new FileListProvider(context);
+    const mergeService = new MergeService();
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "cpp-file-meger" is now active!');
+    const treeView = vscode.window.createTreeView('weerci-source.cppFileMerger.fileList', {
+        treeDataProvider: provider,
+        showCollapseAll: false,
+        canSelectMany: true,
+    });
+    context.subscriptions.push(treeView);
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('cpp-file-meger.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from cpp_file_meger!');
-	});
+    // Автопоказ контейнера
+    vscode.commands.executeCommand('workbench.view.extension.cppFileMergerContainer');
 
-	context.subscriptions.push(disposable);
+    // Регистрируем все команды
+    registerAllCommands(context, provider, treeView, mergeService);
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {}

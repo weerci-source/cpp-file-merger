@@ -1,23 +1,168 @@
 {
-  "name": "cpp-file-meger",
-  "displayName": "cpp_file_meger",
-  "description": "",
-  "version": "0.0.1",
+  "publisher": "weerci-code",
+  "name": "cpp-file-merger",
+  "displayName": "VS Code File Merger",
+  "description": "Merge multiple files from the workspace into one file and copy to clipboard",
+  "version": "1.0.0",
+  "icon": "resources/file-merger.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/weerci-source/cpp-file-meger.git"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.125.0"
   },
-  "categories": [
-    "Other"
-  ],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cppFileMergerContainer",
+          "title": "Merge List",
+          "icon": "resources/empty-window.svg"
+        }
+      ]
+    },
+    "views": {
+      "cppFileMergerContainer": [
+        {
+          "id": "weerci-source.cppFileMerger.fileList",
+          "name": "Merge List",
+          "icon": "resources/empty-window.svg"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "cpp-file-meger.helloWorld",
-        "title": "Hello World"
+        "command": "cppFileMerger.addFiles",
+        "title": "Add File(s) to Merge List",
+        "icon": "$(file-add)",
+        "multiSelect": true
+      },
+      {
+        "command": "cppFileMerger.addFolder",
+        "title": "Add Folder Recursively",
+        "icon": "$(folder-active)"
+      },
+      {
+        "command": "cppFileMerger.addOpenEditors",
+        "title": "Add all Open files",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "cppFileMerger.removeFile",
+        "title": "Remove from List",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cppFileMerger.removeSelected",
+        "title": "Remove Selected",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cppFileMerger.mergeAndCopy",
+        "title": "Merge, Copy and Save",
+        "icon": "$(combine)"
+      },
+      {
+        "command": "cppFileMerger.clearList",
+        "title": "Clear List",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "cppFileMerger.configureExcludes",
+        "title": "Configure Excluded Patterns",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "cppFileMerger.exclude",
+        "title": "Exclude from Merge",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "cppFileMerger.include",
+        "title": "Include in Merge",
+        "icon": "$(add)"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "cppFileMerger.addFiles",
+          "when": "resourceExtname",
+          "group": "navigation"
+        },
+        {
+          "command": "cppFileMerger.addFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "cppFileMerger.mergeAndCopy",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cppFileMerger.addOpenEditors",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@2"
+        },
+        {
+          "command": "cppFileMerger.removeSelected",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@3"
+        },
+        {
+          "command": "cppFileMerger.clearList",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@4"
+        },
+        {
+          "command": "cppFileMerger.configureExcludes",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cppFileMerger.exclude",
+          "when": "view == weerci-source.cppFileMerger.fileList && (viewItem == fileItem || viewItem == folderItem)",
+          "group": "inline@0"
+        },
+        {
+          "command": "cppFileMerger.include",
+          "when": "view == weerci-source.cppFileMerger.fileList && (viewItem == fileItem.excluded || viewItem == folderItem.excluded)",
+          "group": "inline@0"
+        },
+        {
+          "command": "cppFileMerger.removeFile",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "inline@1"
+        }
+      ]
+    }
+  },
+  "configuration": {
+    "title": "File Merger",
+    "properties": {
+      "cppFileMerger.excludePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "**/node_modules/**",
+          "**/.git/**",
+          "**/build/**",
+          "**/test/**"
+        ],
+        "description": "Glob patterns to exclude when adding folders"
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -28,17 +173,25 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.125.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "eslint": "^10.5.0",
     "typescript": "^6.0.3",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
+    "typescript-eslint": "^8.61.1"
   },
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
+  },
+  "files": [
+    "out/**/*",
+    "resources/**/*",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@vscode/codicons": "^0.0.46-24"
   }
 }
