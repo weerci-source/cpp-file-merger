@@ -1,0 +1,1001 @@
+// src/providers/fileListProvider.ts
+import * as vscode from 'vscode';
+import * as path from 'path';
+import { existsSync } from 'fs';
+import { NodeItem } from '../models/nodeItem';
+import { buildTree, getCommonBasePath } from '../utils/treeBuilder';
+
+export class FileListProvider implements vscode.TreeDataProvider<NodeItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<NodeItem | undefined | null | void>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    private fileSet: Set<string> = new Set();
+    private excludedSet: Set<string> = new Set();
+    private excludedFoldersSet: Set<string> = new Set();
+    private rootItems: NodeItem[] = [];
+
+    constructor(private context: vscode.ExtensionContext) {
+        const saved = context.workspaceState.get<{
+            files: string[];
+            excluded: string[];
+            excludedFolders: string[];
+        }>('cppFileMerger.state', { files: [], excluded: [], excludedFolders: [] });
+
+        this.fileSet = new Set(saved.files.filter(fsPath => existsSync(fsPath)));
+        this.excludedSet = new Set(saved.excluded.filter(fsPath => existsSync(fsPath)));
+        this.excludedFoldersSet = new Set(saved.excludedFolders.filter(fsPath => existsSync(fsPath)));
+
+        if (this.fileSet.size < saved.files.length) {
+            this._saveState();
+        }
+        this._buildTree();
+    }
+
+    private _saveState() {
+        this.context.workspaceState.update('cppFileMerger.state', {
+            files: Array.from(this.fileSet),
+            excluded: Array.from(this.excludedSet),
+            excludedFolders: Array.from(this.excludedFoldersSet)
+        });
+    }
+
+    // ---------- Операции над списком ----------
+
+    public async addFiles(uris: vscode.Uri[]): Promise<number> {
+        let added = 0;
+        for (const uri of uris) {
+            try {
+                const stat = await vscode.workspace.fs.stat(uri);
+                if (stat.type !== vscode.FileType.File) continue;
+            } catch {
+                continue;
+            }
+            const key = uri.fsPath;
+            if (!this.fileSet.has(key)) {
+                this.fileSet.add(key);
+                added++;
+            }
+        }
+        if (added > 0) {
+            this._saveState();
+            this._buildTree();
+            this.refresh();
+        }
+        return added;
+    }
+
+    public removeFile(uri: vscode.Uri): boolean {
+        const key = uri.fsPath;
+        const removed = this.fileSet.delete(key);
+        this.excludedSet.delete(key);
+        if (removed) {
+            this._saveState();
+            this._buildTree();
+            this.refresh();
+        }
+        return removed;
+    }
+
+    public removeFiles(uris: vscode.Uri[]): number {
+        let removed = 0;
+        for (const uri of uris) {
+            const key = uri.fsPath;
+            if (this.fileSet.delete(key)) {
+                this.excludedSet.delete(key);
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            this._saveState();
+            this._buildTree();
+            this.refresh();
+        }
+        return removed;
+    }
+
+    public clear() {
+        this.fileSet.clear();
+        this.excludedSet.clear();
+        this.excludedFoldersSet.clear();
+        this._saveState();
+        this._buildTree();
+        this.refresh();
+    }
+
+    public getFiles(): vscode.Uri[] {
+        return Array.from(this.fileSet).map(fsPath => vscode.Uri.file(fsPath));
+    }
+
+    public getActiveFiles(): vscode.Uri[] {
+        const active: string[] = [];
+        for (const fsPath of this.fileSet) {
+            if (!this.isPathExcluded(fsPath)) {
+                active.push(fsPath);
+            }
+        }
+        return active.map(p => vscode.Uri.file(p));
+    }
+
+    public isPathExcluded(fsPath: string): boolean {
+        if (this.excludedSet.has(fsPath)) return true;
+        for (const folder of this.excludedFoldersSet) {
+            if (fsPath === folder || fsPath.startsWith(folder + path.sep)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public isExcluded(uri: vscode.Uri): boolean {
+        return this.isPathExcluded(uri.fsPath);
+    }
+
+    public toggleExcludeItem(item: NodeItem): void {
+        if (item.uri) {
+            // Файл
+            const key = item.uri.fsPath;
+            if (this.excludedSet.has(key)) {
+                this.excludedSet.delete(key);
+            } else {
+                this.excludedSet.add(key);
+            }
+        } else if (item.folderPath) {
+            // Папка
+            const folder = item.folderPath;
+            if (this.excludedFoldersSet.has(folder)) {
+                this.excludedFoldersSet.delete(folder);
+            } else {
+                this.excludedFoldersSet.add(folder);
+            }
+        } else {
+            return;
+        }
+        this._saveState();
+        this._buildTree();
+        this.refresh();
+    }
+
+    public removeItem(item: NodeItem): number {
+        if (item.uri) {
+            return this.removeFile(item.uri) ? 1 : 0;
+        } else if (item.folderPath) {
+            const folder = item.folderPath + path.sep;
+            const toRemove: string[] = [];
+            for (const filePath of this.fileSet) {
+                if (filePath === item.folderPath || filePath.startsWith(folder)) {
+                    toRemove.push(filePath);
+                }
+            }
+            if (toRemove.length === 0) return 0;
+            let removed = 0;
+            for (const fp of toRemove) {
+                if (this.fileSet.delete(fp)) {
+                    this.excludedSet.delete(fp);
+                    removed++;
+                }
+            }
+            if (removed > 0) {
+                this._saveState();
+                this._buildTree();
+                this.refresh();
+            }
+            return removed;
+        }
+        return 0;
+    }
+
+    public removeItems(items: readonly NodeItem[]): number {
+        let total = 0;
+        for (const item of items) {
+            total += this.removeItem(item);
+        }
+        return total;
+    }
+
+    // ---------- Построение дерева ----------
+
+    private _buildTree() {
+        const paths = Array.from(this.fileSet);
+        if (paths.length === 0) {
+            this.rootItems = [];
+            return;
+        }
+
+        // Выбираем базовую папку: первый workspace или общий префикс
+        const wsFolder = vscode.workspace.workspaceFolders?.[0];
+        let basePath: string;
+        if (wsFolder) {
+            basePath = wsFolder.uri.fsPath;
+        } else {
+            basePath = getCommonBasePath(paths);
+        }
+
+        const isExcluded = (fsPath: string) => this.isPathExcluded(fsPath);
+        this.rootItems = buildTree(paths, basePath, isExcluded);
+    }
+
+    // ---------- TreeDataProvider ----------
+
+    public refresh(): void {
+        this._onDidChangeTreeData.fire();
+    }
+
+    getTreeItem(element: NodeItem): vscode.TreeItem {
+        return element;
+    }
+
+    async getChildren(element?: NodeItem): Promise<NodeItem[]> {
+        if (!element) return this.rootItems;
+        return element.children || [];
+    }
+}
+
+// src/extension.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from './providers/fileListProvider';
+import { MergeService } from './services/mergeService';
+import { registerAllCommands } from './commands';
+
+export function activate(context: vscode.ExtensionContext) {
+    const provider = new FileListProvider(context);
+    const mergeService = new MergeService();
+
+    const treeView = vscode.window.createTreeView('weerci-source.cppFileMerger.fileList', {
+        treeDataProvider: provider,
+        showCollapseAll: false,
+        canSelectMany: true,
+    });
+    context.subscriptions.push(treeView);
+
+    // Автопоказ контейнера
+    vscode.commands.executeCommand('workbench.view.extension.cppFileMergerContainer');
+
+    // Регистрируем все команды
+    registerAllCommands(context, provider, treeView, mergeService);
+}
+
+export function deactivate() {}
+
+// src/utils/treeBuilder.ts
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { NodeItem } from '../models/nodeItem';
+
+/**
+ * Строит дерево из списка абсолютных путей.
+ * @param paths - массив абсолютных путей файлов
+ * @param basePath - корневая папка (относительно которой строятся пути)
+ * @param isExcludedFn - функция проверки, исключён ли файл или папка
+ * @returns корневые элементы дерева (массив NodeItem)
+ */
+export function buildTree(
+    paths: string[],
+    basePath: string,
+    isExcludedFn: (fsPath: string) => boolean
+): NodeItem[] {
+    if (paths.length === 0) {
+        return [];
+    }
+
+    const root = new NodeItem('', vscode.TreeItemCollapsibleState.None);
+    root.children = [];
+
+    for (const fullPath of paths) {
+        let relative = path.relative(basePath, fullPath);
+        if (relative === '' || relative.startsWith('..')) {
+            // файл вне базовой папки – корневой элемент с полным путём
+            const excluded = isExcludedFn(fullPath);
+            const node = new NodeItem(
+                fullPath,
+                vscode.TreeItemCollapsibleState.None,
+                vscode.Uri.file(fullPath),
+                undefined,
+                undefined,
+                excluded
+            );
+            root.children!.push(node);
+            continue;
+        }
+
+        const segments = relative.split(path.sep);
+        let current = root;
+        let currentPath = basePath;
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const isLast = (i === segments.length - 1);
+            const childPath = path.join(currentPath, seg);
+
+            let child = current.children?.find(c => c.getLabelString() === seg);
+            if (!child) {
+                const collapsible = isLast
+                    ? vscode.TreeItemCollapsibleState.None
+                    : vscode.TreeItemCollapsibleState.Collapsed;
+                const uri = isLast ? vscode.Uri.file(fullPath) : undefined;
+                const folderPath = isLast ? undefined : childPath;
+                let excluded = false;
+                if (isLast) {
+                    excluded = isExcludedFn(fullPath);
+                } else {
+                    excluded = isExcludedFn(childPath);
+                }
+                child = new NodeItem(
+                    seg,
+                    collapsible,
+                    uri,
+                    undefined,
+                    folderPath,
+                    excluded
+                );
+                if (!current.children) current.children = [];
+                current.children.push(child);
+            }
+            current = child;
+            currentPath = childPath;
+        }
+    }
+
+    const rootItems = root.children || [];
+    sortNodes(rootItems);
+    return rootItems;
+}
+
+/**
+ * Сортирует узлы: папки перед файлами, затем по алфавиту.
+ */
+export function sortNodes(nodes: NodeItem[]): void {
+    nodes.sort((a, b) => {
+        const aIsFolder = a.children && a.children.length > 0;
+        const bIsFolder = b.children && b.children.length > 0;
+        if (aIsFolder && !bIsFolder) return -1;
+        if (!aIsFolder && bIsFolder) return 1;
+        return a.getLabelString().localeCompare(b.getLabelString());
+    });
+    for (const node of nodes) {
+        if (node.children) {
+            sortNodes(node.children);
+        }
+    }
+}
+
+/**
+ * Определяет общий префикс для всех путей (для выбора базовой папки).
+ */
+export function getCommonBasePath(paths: string[]): string {
+    if (paths.length === 0) return '';
+    const sorted = paths.slice().sort();
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    let i = 0;
+    while (i < first.length && i < last.length && first[i] === last[i]) i++;
+    const common = first.substring(0, i);
+    const lastSep = common.lastIndexOf(path.sep);
+    return lastSep >= 0 ? common.substring(0, lastSep) : path.dirname(first);
+}
+
+// src/models/nodeItem.ts
+import * as vscode from 'vscode';
+
+export class NodeItem extends vscode.TreeItem {
+    public children?: NodeItem[];
+    public uri?: vscode.Uri;
+    public folderPath?: string;
+    public excluded: boolean;
+
+    constructor(
+        label: string,
+        collapsibleState: vscode.TreeItemCollapsibleState,
+        uri?: vscode.Uri,
+        children?: NodeItem[],
+        folderPath?: string,
+        excluded: boolean = false
+    ) {
+        super(label, collapsibleState);
+        this.uri = uri;
+        this.children = children;
+        this.folderPath = folderPath;
+        this.excluded = excluded;
+
+        if (uri) {
+            this.contextValue = excluded ? 'fileItem.excluded' : 'fileItem';
+        } else {
+            this.contextValue = excluded ? 'folderItem.excluded' : 'folderItem';
+        }
+
+        if (uri) {
+            this.resourceUri = uri;
+            this.tooltip = uri.fsPath;
+            this.command = {
+                command: 'vscode.open',
+                title: 'Open File',
+                arguments: [uri]
+            };
+            this.iconPath = excluded
+                ? new vscode.ThemeIcon('circle-slash')
+                : vscode.ThemeIcon.File;
+        } else {
+            this.iconPath = excluded
+                ? new vscode.ThemeIcon('folder-opened')
+                : new vscode.ThemeIcon('folder');
+        }
+
+        if (excluded) {
+            this.description = '[excluded]';
+        }
+    }
+
+    public getLabelString(): string {
+        return typeof this.label === 'string' ? this.label : this.label?.label || '';
+    }
+}
+
+// src/services/configurationService.ts
+import * as vscode from 'vscode';
+
+export class ConfigurationService {
+    /**
+     * Получает массив шаблонов исключений из настроек.
+     */
+    public static getExcludePatterns(): string[] {
+        const config = vscode.workspace.getConfiguration('cppFileMerger');
+        return config.get<string[]>('excludePatterns', ['**/node_modules/**']);
+    }
+
+    /**
+     * Открывает настройки в VS Code с фокусом на параметр excludePatterns.
+     */
+    public static openSettings(): void {
+        vscode.commands.executeCommand('workbench.action.openSettings', 'cppFileMerger.excludePatterns');
+    }
+}
+
+// src/services/mergeService.ts
+import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs/promises';
+
+export class MergeService {
+    /**
+     * Проверяет существование файлов и возвращает список существующих.
+     */
+    public async filterExistingFiles(uris: vscode.Uri[]): Promise<{
+        existing: vscode.Uri[];
+        missing: string[];
+    }> {
+        const existing: vscode.Uri[] = [];
+        const missing: string[] = [];
+        for (const uri of uris) {
+            try {
+                await fs.access(uri.fsPath);
+                existing.push(uri);
+            } catch {
+                missing.push(path.basename(uri.fsPath));
+            }
+        }
+        return { existing, missing };
+    }
+
+    /**
+     * Выполняет слияние файлов: читает содержимое, добавляет комментарии,
+     * записывает в целевой файл и копирует в буфер обмена.
+     */
+    public async mergeAndSave(
+        uris: vscode.Uri[],
+        saveUri: vscode.Uri,
+        progress: vscode.Progress<{ message?: string; increment?: number }>
+    ): Promise<void> {
+        let merged = '';
+        for (let i = 0; i < uris.length; i++) {
+            const uri = uris[i];
+            const wsFolder = vscode.workspace.getWorkspaceFolder(uri);
+            const displayName = wsFolder
+                ? path.relative(wsFolder.uri.fsPath, uri.fsPath)
+                : path.basename(uri.fsPath);
+            progress.report({
+                message: `Processing ${path.basename(uri.fsPath)}`,
+                increment: ((i + 1) / uris.length) * 100
+            });
+            try {
+                const content = await fs.readFile(uri.fsPath, 'utf-8');
+                merged += `// ${displayName}\n${content}\n\n`;
+            } catch (err: any) {
+                throw new Error(`Failed to read ${displayName}: ${err.message}`);
+            }
+        }
+
+        // Копируем в буфер
+        await vscode.env.clipboard.writeText(merged);
+
+        // Записываем в файл
+        try {
+            await fs.writeFile(saveUri.fsPath, merged, 'utf-8');
+        } catch (err: any) {
+            throw new Error(`Failed to save file: ${err.message}`);
+        }
+    }
+}
+
+// src/commands/addOpenEditors.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+
+export function registerAddOpenEditors(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.addOpenEditors', async () => {
+            const uris = vscode.workspace.textDocuments
+                .filter(doc => doc.uri.scheme === 'file')
+                .map(doc => doc.uri);
+            if (uris.length === 0) {
+                vscode.window.showInformationMessage('No open editors.');
+                return;
+            }
+            const added = await provider.addFiles(uris);
+            vscode.window.showInformationMessage(`Added ${added} open editor(s).`);
+        })
+    );
+}
+
+// src/commands/configureExcludes.ts
+import * as vscode from 'vscode';
+import { ConfigurationService } from '../services/configurationService';
+
+export function registerConfigureExcludes(context: vscode.ExtensionContext) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.configureExcludes', () => {
+            ConfigurationService.openSettings();
+        })
+    );
+}
+
+// src/commands/addFolder.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+import { ConfigurationService } from '../services/configurationService';
+
+export function registerAddFolder(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.addFolder', async (folderUri: vscode.Uri) => {
+            if (!folderUri) {
+                vscode.window.showErrorMessage('No folder selected.');
+                return;
+            }
+            const wsFolder = vscode.workspace.getWorkspaceFolder(folderUri);
+            if (!wsFolder) {
+                vscode.window.showErrorMessage('Folder must be inside the current workspace.');
+                return;
+            }
+            const excludePatterns = ConfigurationService.getExcludePatterns();
+            const pattern = new vscode.RelativePattern(folderUri, '**/*');
+            try {
+                const files = await vscode.workspace.findFiles(pattern, `{${excludePatterns.join(',')}}`);
+                if (files.length === 0) {
+                    vscode.window.showInformationMessage('No files found in the folder.');
+                    return;
+                }
+                const added = await provider.addFiles(files);
+                vscode.window.showInformationMessage(`Added ${added} file(s) from folder.`);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Error reading folder: ${err}`);
+            }
+        })
+    );
+}
+
+// src/commands/exclude.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+import { NodeItem } from '../models/nodeItem';
+
+export function registerExclude(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.exclude', (item: NodeItem) => {
+            if (!item) {
+                vscode.window.showErrorMessage('No item provided.');
+                return;
+            }
+            const uri = item.uri || vscode.Uri.file(item.folderPath || '');
+            if (provider.isExcluded(uri)) {
+                vscode.window.showInformationMessage(`${item.getLabelString()} is already excluded.`);
+                return;
+            }
+            provider.toggleExcludeItem(item); // переключает состояние (включает исключение)
+            vscode.window.showInformationMessage(`${item.getLabelString()} excluded.`);
+        })
+    );
+}
+
+// src/commands/removeFile.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+import { NodeItem } from '../models/nodeItem';
+
+export function registerRemoveFile(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.removeFile', (item: NodeItem) => {
+            if (!item) {
+                vscode.window.showErrorMessage('No item provided.');
+                return;
+            }
+            const count = provider.removeItem(item);
+            if (count > 0) {
+                vscode.window.showInformationMessage(`Removed ${count} item(s).`);
+            } else {
+                vscode.window.showInformationMessage('Nothing removed.');
+            }
+        })
+    );
+}
+
+// src/commands/mergeAndCopy.ts
+import * as vscode from 'vscode';
+import * as path from 'path';
+import { FileListProvider } from '../providers/fileListProvider';
+import { MergeService } from '../services/mergeService';
+
+export function registerMergeAndCopy(
+    context: vscode.ExtensionContext,
+    provider: FileListProvider,
+    mergeService: MergeService
+) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.mergeAndCopy', async () => {
+            const files = provider.getActiveFiles();
+            if (files.length === 0) {
+                vscode.window.showWarningMessage('List is empty or all files excluded. Add files first.');
+                return;
+            }
+
+            const { existing, missing } = await mergeService.filterExistingFiles(files);
+            if (missing.length > 0) {
+                const msg = `Some files no longer exist: ${missing.join(', ')}. Continue with remaining?`;
+                const choice = await vscode.window.showWarningMessage(msg, { modal: true }, 'Continue');
+                if (!choice) { return; }
+            }
+            if (existing.length === 0) {
+                vscode.window.showErrorMessage('No existing files to merge.');
+                return;
+            }
+
+            const saveUri = await vscode.window.showSaveDialog({
+                defaultUri: vscode.Uri.file(path.join(
+                    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '',
+                    'merge.txt'
+                )),
+                filters: { 'Text Files': ['txt'] }
+            });
+            if (!saveUri) { return; }
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Merging files...',
+                cancellable: false
+            }, async (progress) => {
+                await mergeService.mergeAndSave(existing, saveUri, progress);
+                vscode.window.showInformationMessage(
+                    `Merged ${existing.length} file(s) → ${path.basename(saveUri.fsPath)}. Also copied to clipboard.`
+                );
+            });
+        })
+    );
+}
+
+// src/commands/removeSelected.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+import { NodeItem } from '../models/nodeItem';
+
+export function registerRemoveSelected(
+    context: vscode.ExtensionContext,
+    treeView: vscode.TreeView<NodeItem>,
+    provider: FileListProvider
+) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.removeSelected', () => {
+            const selectedItems = treeView.selection;
+            if (selectedItems.length === 0) {
+                vscode.window.showWarningMessage('No items selected.');
+                return;
+            }
+            const count = provider.removeItems(selectedItems);
+            vscode.window.showInformationMessage(`Removed ${count} item(s).`);
+        })
+    );
+}
+
+// src/commands/include.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+import { NodeItem } from '../models/nodeItem';
+
+export function registerInclude(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.include', (item: NodeItem) => {
+            if (!item) {
+                vscode.window.showErrorMessage('No item provided.');
+                return;
+            }
+            const uri = item.uri || vscode.Uri.file(item.folderPath || '');
+            if (!provider.isExcluded(uri)) {
+                vscode.window.showInformationMessage(`${item.getLabelString()} is already included.`);
+                return;
+            }
+            provider.toggleExcludeItem(item); // переключает состояние (снимает исключение)
+            vscode.window.showInformationMessage(`${item.getLabelString()} included.`);
+        })
+    );
+}
+
+// src/commands/index.ts
+import { NodeItem } from '../models/nodeItem';
+import * as vscode from 'vscode';
+import { registerAddFiles } from './addFiles';
+import { registerAddFolder } from './addFolder';
+import { registerAddOpenEditors } from './addOpenEditors';
+import { registerRemoveFile } from './removeFile';
+import { registerRemoveSelected } from './removeSelected';
+import { registerExclude } from './exclude';          // новый
+import { registerInclude } from './include';          // новый
+import { registerMergeAndCopy } from './mergeAndCopy';
+import { registerClearList } from './clearList';
+import { registerConfigureExcludes } from './configureExcludes';
+import { FileListProvider } from '../providers/fileListProvider';
+import { MergeService } from '../services/mergeService';
+
+export function registerAllCommands(
+    context: vscode.ExtensionContext,
+    provider: FileListProvider,
+    treeView: vscode.TreeView<NodeItem>,
+    mergeService: MergeService
+): void {
+    registerAddFiles(context, provider);
+    registerAddFolder(context, provider);
+    registerAddOpenEditors(context, provider);
+    registerRemoveFile(context, provider);
+    registerRemoveSelected(context, treeView, provider);
+    registerExclude(context, provider);       // добавлено
+    registerInclude(context, provider);       // добавлено
+    registerMergeAndCopy(context, provider, mergeService);
+    registerClearList(context, provider);
+    registerConfigureExcludes(context);
+}
+
+// src/commands/addFiles.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+
+export function registerAddFiles(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.addFiles', async (contextSelection: vscode.Uri, allSelections: vscode.Uri[]) => {
+            let uris: vscode.Uri[] = [];
+            if (allSelections && Array.isArray(allSelections) && allSelections.length > 0) {
+                uris = allSelections;
+            } else if (Array.isArray(contextSelection)) {
+                uris = contextSelection;
+            } else if (contextSelection) {
+                uris = [contextSelection];
+            } else {
+                vscode.window.showErrorMessage('No file(s) selected.');
+                return;
+            }
+
+            const added = await provider.addFiles(uris);
+            if (added > 0) {
+                vscode.window.showInformationMessage(`Added ${added} file(s).`);
+            } else {
+                vscode.window.showInformationMessage('No valid files added (already in list or not a file).');
+            }
+        })
+    );
+}
+
+// src/commands/clearList.ts
+import * as vscode from 'vscode';
+import { FileListProvider } from '../providers/fileListProvider';
+
+export function registerClearList(context: vscode.ExtensionContext, provider: FileListProvider) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('cppFileMerger.clearList', () => {
+            provider.clear();
+            vscode.window.showInformationMessage('List cleared.');
+        })
+    );
+}
+
+// package.json
+{
+  "publisher": "weerci-code",
+  "name": "cpp-file-merger",
+  "displayName": "VS Code File Merger",
+  "description": "Merge multiple files from the workspace into one file and copy to clipboard",
+  "version": "1.0.0",
+  "icon": "resources/file-merger.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/weerci-source/cpp-file-meger.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cppFileMergerContainer",
+          "title": "Merge List",
+          "icon": "resources/empty-window.svg"
+        }
+      ]
+    },
+    "views": {
+      "cppFileMergerContainer": [
+        {
+          "id": "weerci-source.cppFileMerger.fileList",
+          "name": "Merge List",
+          "icon": "resources/empty-window.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cppFileMerger.addFiles",
+        "title": "Add File(s) to Merge List",
+        "icon": "$(file-add)",
+        "multiSelect": true
+      },
+      {
+        "command": "cppFileMerger.addFolder",
+        "title": "Add Folder Recursively",
+        "icon": "$(folder-active)"
+      },
+      {
+        "command": "cppFileMerger.addOpenEditors",
+        "title": "Add all Open files",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "cppFileMerger.removeFile",
+        "title": "Remove from List",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cppFileMerger.removeSelected",
+        "title": "Remove Selected",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "cppFileMerger.mergeAndCopy",
+        "title": "Merge, Copy and Save",
+        "icon": "$(combine)"
+      },
+      {
+        "command": "cppFileMerger.clearList",
+        "title": "Clear List",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "cppFileMerger.configureExcludes",
+        "title": "Configure Excluded Patterns",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "cppFileMerger.exclude",
+        "title": "Exclude from Merge",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "cppFileMerger.include",
+        "title": "Include in Merge",
+        "icon": "$(add)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "cppFileMerger.addFiles",
+          "when": "resourceExtname",
+          "group": "navigation"
+        },
+        {
+          "command": "cppFileMerger.addFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "cppFileMerger.mergeAndCopy",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@1"
+        },
+        {
+          "command": "cppFileMerger.addOpenEditors",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@2"
+        },
+        {
+          "command": "cppFileMerger.removeSelected",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@3"
+        },
+        {
+          "command": "cppFileMerger.clearList",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@4"
+        },
+        {
+          "command": "cppFileMerger.configureExcludes",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cppFileMerger.exclude",
+          "when": "view == weerci-source.cppFileMerger.fileList && (viewItem == fileItem || viewItem == folderItem)",
+          "group": "inline@0"
+        },
+        {
+          "command": "cppFileMerger.include",
+          "when": "view == weerci-source.cppFileMerger.fileList && (viewItem == fileItem.excluded || viewItem == folderItem.excluded)",
+          "group": "inline@0"
+        },
+        {
+          "command": "cppFileMerger.removeFile",
+          "when": "view == weerci-source.cppFileMerger.fileList",
+          "group": "inline@1"
+        }
+      ]
+    }
+  },
+  "configuration": {
+    "title": "File Merger",
+    "properties": {
+      "cppFileMerger.excludePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "**/node_modules/**",
+          "**/.git/**",
+          "**/build/**",
+          "**/test/**"
+        ],
+        "description": "Glob patterns to exclude when adding folders"
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "^1.125.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "eslint": "^10.5.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  },
+  "files": [
+    "out/**/*",
+    "resources/**/*",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@vscode/codicons": "^0.0.46-24"
+  }
+}
+

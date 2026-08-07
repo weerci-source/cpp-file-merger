@@ -99,11 +99,6 @@ The activity bar icon is a simple “empty window” SVG – it indicates the me
 - Files outside the current workspace are shown with their full absolute path in the tree; merging them works correctly, but the relative path comment may be the full path.
 - If a folder contains a very large number of files, adding it recursively may take a moment.
 
-## Release Notes
-
-### 1.0.0
-- Initial release.
-
 ## Contributing
 
 Bug reports and feature requests are welcome on the [GitHub repository](https://github.com/weerci-source/cpp-file-meger).

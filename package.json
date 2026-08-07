@@ -3,7 +3,7 @@
   "name": "cpp-file-merger",
   "displayName": "VS Code File Merger",
   "description": "Merge multiple files from the workspace into one file and copy to clipboard",
-  "version": "1.0.0",
+  "version": "1.4.2",
   "icon": "resources/file-merger.png",
   "repository": {
     "type": "git",
@@ -44,7 +44,8 @@
       {
         "command": "cppFileMerger.addFolder",
         "title": "Add Folder Recursively",
-        "icon": "$(folder-active)"
+        "icon": "$(folder-active)",
+        "multiSelect": true
       },
       {
         "command": "cppFileMerger.addOpenEditors",
@@ -189,7 +190,9 @@
   "files": [
     "out/**/*",
     "resources/**/*",
-    "LICENSE"
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "dependencies": {
     "@vscode/codicons": "^0.0.46-24"
