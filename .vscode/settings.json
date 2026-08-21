@@ -1,40 +1,43 @@
 // Place your settings in this file to overwrite default and user settings.
 {
-	"files.exclude": {
-		"out": true, // set this to true to hide the "out" folder with the compiled JS files
-		"node_modules": true,
-		".git": true,
-		".gitignore": true,
-		"package-lock.json": true,
-		"eslint.config.mjs": true,
-		"vsc-extension-quickstart.md": true,
-		"**/*.vsix/**": true,
-	},
-	"search.exclude": {
-		"out": true // set this to false to include "out" folder in search results
-	},
-	// Turn off tsc task auto detection since we have the necessary tasks as npm scripts
-	"js/ts.tsc.autoDetect": "off",
-	"editor.tokenColorCustomizations": {
-		"textMateRules": [
-			{
-				"scope": "googletest.failed",
-				"settings": {
-					"foreground": "#f00"
-				}
-			},
-			{
-				"scope": "googletest.passed",
-				"settings": {
-					"foreground": "#0f0"
-				}
-			},
-			{
-				"scope": "googletest.run",
-				"settings": {
-					"foreground": "#0f0"
-				}
-			}
-		]
-	}
+    "cppFileMerger.excludePatterns": [
+        "**/commands/**",
+    ],
+    "files.exclude": {
+        "out": true, // set this to true to hide the "out" folder with the compiled JS files
+        "node_modules": true,
+        ".git": true,
+        ".gitignore": true,
+        "package-lock.json": true,
+        "eslint.config.mjs": true,
+        "vsc-extension-quickstart.md": true,
+        "**/*.vsix/**": true,
+    },
+    "search.exclude": {
+        "out": true // set this to false to include "out" folder in search results
+    },
+    // Turn off tsc task auto detection since we have the necessary tasks as npm scripts
+    "js/ts.tsc.autoDetect": "off",
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            {
+                "scope": "googletest.failed",
+                "settings": {
+                    "foreground": "#f00"
+                }
+            },
+            {
+                "scope": "googletest.passed",
+                "settings": {
+                    "foreground": "#0f0"
+                }
+            },
+            {
+                "scope": "googletest.run",
+                "settings": {
+                    "foreground": "#0f0"
+                }
+            }
+        ]
+    }
 }

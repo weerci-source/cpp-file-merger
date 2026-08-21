@@ -5,6 +5,21 @@ All notable changes to the "cpp-file-merger" extension will be documented in thi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-08-21
+
+### Added
+- **Unified "Add to Merge List" command** – select any mix of files and folders in the Explorer and add them all at once with a single action (command `cppFileMerger.addSelected`).
+- **Smart folder state** – when you exclude a folder, all its contents are excluded. If you then explicitly include a subfolder or a file inside it, that item becomes included, and the parent folder automatically updates its state to "included" (as long as at least one file inside is not excluded). The same happens in reverse: when the last included file inside a folder is excluded, the folder reverts to "excluded".
+- **Workspace‑local configuration** – the "Configure Excluded Patterns" button now opens (or creates) the `.vscode/settings.json` file in the current workspace, making the exclude patterns project‑specific and shareable with your team via version control.
+
+### Fixed
+- Fixed an activation error (`Cannot read properties of undefined (reading 'filter')`) that occurred when the extension state was missing the new `includedOverrides` field from previous versions.
+- Corrected the behavior when toggling exclusion on folders that were implicitly excluded by a parent folder – they now properly include all their files when you choose to include them.
+
+### Changed
+- The Explorer context menu now shows a single **"Add to Merge List"** entry instead of separate "Add File(s)" and "Add Folder" entries. The old commands are still available in the Command Palette for backward compatibility.
+- The `cppFileMerger.configureExcludes` command now opens the workspace‑local `settings.json` instead of the global user settings, providing a more intuitive and project‑specific configuration experience.
+
 ## [1.4.2] - 2026-08-07
 
 ### Added
@@ -17,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - (No breaking changes)
 
-## [1.0.0] - 2026-08- 01 (initial release)
+## [1.0.0] - 2026-08-01 (initial release)
 
 ### Added
 - Initial release of the VS Code File Merger extension.
