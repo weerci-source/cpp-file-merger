@@ -1,4 +1,5 @@
 <img src="https://github.com/weerci-source/cpp-file-merger/blob/main/resources/file-merger.png" width="200" />
+
 # File Merger for VS Code
 
 Easily combine the contents of multiple files into a single document, with each original file path shown as a comment.  
